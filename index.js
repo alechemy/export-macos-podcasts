@@ -1,13 +1,16 @@
-const { promises: fs } = require("fs");
-const { promisify } = require("util");
-const sqlite3 = require("sqlite3").verbose();
-const mm = require("music-metadata");
-const path = require("path");
-const { exec } = require("child_process");
+import { promises as fs } from "fs";
+import { promisify } from "util";
+import sqlite3 from "sqlite3";
+import mm from "music-metadata";
+import "path";
+import { exec } from "child_process";
+import groupBy from "lodash-es/groupBy.js";
+import MP3Tag from "mp3tag.js";
 
 const podcastSelectSQL = `
-  SELECT zcleanedtitle as zcleanedtitle, zuuid as zuuid
-    FROM ZMTEPISODE;
+  SELECT zcleanedtitle as zcleanedtitle, ZMTEPISODE.zuuid as zuuid, ZMTPODCAST.ztitle as ztitle
+    FROM ZMTEPISODE, ZMTPODCAST
+    WHERE ZMTEPISODE.zpodcastuuid = ZMTPODCAST.zuuid;
 `;
 const fileNameMaxLength = 50;
 
@@ -107,16 +110,36 @@ async function exportPodcasts(podcastsDBData) {
   });
   const outputDir = getOutputDirPath();
   await fs.mkdir(outputDir, { recursive: true });
+
+  const podcastsByTitle = groupBy(
+    filesWithDBData,
+    (ep) => ep.dbMeta?.ztitle ?? "Unknown Artist"
+  );
+
   await Promise.all(
-    filesWithDBData.map(async (podcast) => {
-      const newFileName =
-        podcast.dbMeta?.zcleanedtitle ??
-        (await getMP3MetaTitle(podcast.path)) ??
-        podcast.uuid;
-      const newFileNameLength = newFileName.substr(0, fileNameMaxLength);
-      const newPath = `${outputDir}/${newFileNameLength}.mp3`;
-      console.log(`${podcast.path} -> ${newPath}`);
-      await fs.copyFile(podcast.path, newPath);
+    Object.entries(podcastsByTitle).map(async ([podcastTitle, episodes]) => {
+      await fs.mkdir(`${outputDir}/${podcastTitle}`, { recursive: true });
+
+      for (let episode of episodes) {
+        const newFileName =
+          episode.dbMeta?.zcleanedtitle ??
+          (await getMP3MetaTitle(episode.path)) ??
+          episode.uuid;
+
+        const newFileNameLength = newFileName.substr(0, fileNameMaxLength);
+        const newPath = `${outputDir}/${podcastTitle}/${newFileNameLength}.mp3`;
+        await fs.copyFile(episode.path, newPath);
+
+        let tagger = new MP3Tag((await fs.readFile(newPath)).buffer);
+        tagger.read();
+        tagger.tags.v2.TIT2 = newFileName;
+        tagger.tags.v2.TPE1 = podcastTitle;
+        tagger.tags.v2.TPE2 = podcastTitle;
+        tagger.tags.v2.TCON = "Podcast";
+        tagger.save();
+
+        await fs.writeFile(newPath, Buffer.from(tagger.buffer));
+      }
     })
   );
   console.log(`\n\nSuccessful Export to '${outputDir}' folder!`);
