@@ -5,22 +5,22 @@ import mm from "music-metadata";
 import "path";
 import { exec } from "child_process";
 import groupBy from "lodash-es/groupBy.js";
-import MP3Tag from "mp3tag.js";
+import { Promise as NodeID3 } from "node-id3";
+import sanitize from "sanitize-filename";
 
 const podcastSelectSQL = `
   SELECT zcleanedtitle as zcleanedtitle, ZMTEPISODE.zuuid as zuuid, ZMTPODCAST.ztitle as ztitle
     FROM ZMTEPISODE, ZMTPODCAST
     WHERE ZMTEPISODE.zpodcastuuid = ZMTPODCAST.zuuid;
 `;
-const fileNameMaxLength = 50;
 
 function getOutputDirPath() {
   const d = new Date();
   const pad = (s) => s.toString().padStart(2, "0");
   const month = pad(d.getMonth() + 1);
   const day = pad(d.getDate());
-  const currentDateFolder = `${d.getFullYear()}.${month}.${day}`;
-  return `${process.env.HOME}/Downloads/PodcastsExport/${currentDateFolder}`;
+  // const currentDateFolder = `${d.getFullYear()}.${month}.${day}`;
+  return "/Volumes/SD_CARD/LEARNING";
 }
 
 async function getPodcastsBasePath() {
@@ -118,7 +118,9 @@ async function exportPodcasts(podcastsDBData) {
 
   await Promise.all(
     Object.entries(podcastsByTitle).map(async ([podcastTitle, episodes]) => {
-      await fs.mkdir(`${outputDir}/${podcastTitle}`, { recursive: true });
+      await fs.mkdir(`${outputDir}/${sanitize(podcastTitle)}`, {
+        recursive: true,
+      });
 
       for (let episode of episodes) {
         const newFileName =
@@ -126,19 +128,23 @@ async function exportPodcasts(podcastsDBData) {
           (await getMP3MetaTitle(episode.path)) ??
           episode.uuid;
 
-        const newFileNameLength = newFileName.substr(0, fileNameMaxLength);
-        const newPath = `${outputDir}/${podcastTitle}/${newFileNameLength}.mp3`;
-        await fs.copyFile(episode.path, newPath);
+        const newPath = `${outputDir}/${sanitize(podcastTitle)}/${sanitize(
+          newFileName
+        )}.mp3`;
+        console.log(newPath);
 
-        let tagger = new MP3Tag((await fs.readFile(newPath)).buffer);
-        tagger.read();
-        tagger.tags.v2.TIT2 = newFileName;
-        tagger.tags.v2.TPE1 = podcastTitle;
-        tagger.tags.v2.TPE2 = podcastTitle;
-        tagger.tags.v2.TCON = "Podcast";
-        tagger.save();
+        await fs
+          .copyFile(episode.path, newPath)
+          .catch((err) => console.error(err));
 
-        await fs.writeFile(newPath, Buffer.from(tagger.buffer));
+        const tags = {
+          title: newFileName,
+          artist: podcastTitle,
+          album: podcastTitle,
+          performerInfo: podcastTitle,
+        };
+
+        await NodeID3.write(tags, newPath);
       }
     })
   );
